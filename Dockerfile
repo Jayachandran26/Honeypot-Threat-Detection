@@ -1,0 +1,72 @@
+# Dockerfile for Cowrie Honeypot with Dashboard
+FROM ubuntu:22.04
+
+# Set environment variables
+ENV DEBIAN_FRONTEND=noninteractive
+ENV COWRIE_GROUP=cowrie
+ENV COWRIE_USER=cowrie
+
+# Install dependencies
+RUN apt-get update && apt-get install -y \
+    git \
+    python3 \
+    python3-pip \
+    python3-venv \
+    libssl-dev \
+    libffi-dev \
+    build-essential \
+    libpython3-dev \
+    authbind \
+    supervisor \
+    geoip-database-extra \
+    && rm -rf /var/lib/apt/lists/*
+
+# Create cowrie user
+RUN groupadd -r $COWRIE_GROUP && \
+    useradd -r -g $COWRIE_GROUP -d /home/$COWRIE_USER -s /bin/bash $COWRIE_USER && \
+    mkdir -p /home/$COWRIE_USER && \
+    chown $COWRIE_USER:$COWRIE_GROUP /home/$COWRIE_USER
+
+# Switch to cowrie user
+USER $COWRIE_USER
+WORKDIR /home/$COWRIE_USER
+
+# Clone and setup Cowrie
+RUN git clone https://github.com/cowrie/cowrie.git && \
+    cd cowrie && \
+    python3 -m venv cowrie-env && \
+    . cowrie-env/bin/activate && \
+    pip install --upgrade pip && \
+    pip install --upgrade -r requirements.txt
+
+# Copy configuration
+COPY --chown=$COWRIE_USER:$COWRIE_GROUP cowrie.cfg /home/$COWRIE_USER/cowrie/etc/
+COPY --chown=$COWRIE_USER:$COWRIE_GROUP userdb.txt /home/$COWRIE_USER/cowrie/etc/
+
+# Generate SSH keys
+RUN cd cowrie && \
+    ssh-keygen -t rsa -b 2048 -f etc/ssh_host_rsa_key -N '' && \
+    ssh-keygen -t dsa -b 1024 -f etc/ssh_host_dsa_key -N ''
+
+# Create directories
+RUN cd cowrie && \
+    mkdir -p var/log/cowrie var/lib/cowrie/downloads var/lib/cowrie/tty
+
+# Switch back to root for supervisor setup
+USER root
+
+# Install Flask and dependencies for API
+RUN pip3 install flask flask-cors geoip2
+
+# Copy API server
+COPY log-parser.py /opt/log-parser.py
+RUN chmod +x /opt/log-parser.py
+
+# Setup supervisor
+COPY supervisord.conf /etc/supervisor/conf.d/supervisord.conf
+
+# Expose ports
+EXPOSE 2222 2223 5000
+
+# Start supervisor
+CMD ["/usr/bin/supervisord", "-c", "/etc/supervisor/conf.d/supervisord.conf"]
